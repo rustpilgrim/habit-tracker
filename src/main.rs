@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 
+use ansi_term::{
+    Color::{Black, Cyan, Purple, Red, Yellow, RGB},
+    Style,
+};
+
 // TODO
 // I want a habit tracker that works entirely inside of the terminal, with simple data storage/retrieval via MongoDB
 
@@ -77,6 +82,10 @@ impl HabitNode {
         self.status = status;
     }
 
+    fn idle_node(&mut self) {
+        self.status = NodeStatus::IDLE;
+    }
+
     fn skip_node(&mut self) {
         self.status = NodeStatus::SKIPPED;
     }
@@ -112,7 +121,8 @@ pub struct HabitData {
     enabled_days: Option<Vec<u32>>,
     description: String,
     goal: i32, // ex: habit is walk 5000 steps per day, size would be 5000
-    nodes: HashMap<String, HabitNode> // key is month-day-year -> oct 4 2023 = 10-4-2023
+    nodes: HashMap<String, HabitNode>, // key is month-day-year -> oct 4 2023 = 10-4-2023
+    active: bool,
 }
 
 impl HabitData {
@@ -129,7 +139,8 @@ impl HabitData {
                             enabled_days: Some(p),
                             description: desc,
                             goal: goal,
-                            nodes: HashMap::new()
+                            nodes: HashMap::new(),
+                            active: true,
                         }
                     },
                     Err(_) => {
@@ -142,7 +153,8 @@ impl HabitData {
                             enabled_days: None,
                             description: desc,
                             goal: goal,
-                            nodes: HashMap::new()
+                            nodes: HashMap::new(),
+                            active: true,
                         }
                     },
                 }
@@ -155,7 +167,8 @@ impl HabitData {
                     enabled_days: None,
                     description: desc,
                     goal: goal,
-                    nodes: HashMap::new()
+                    nodes: HashMap::new(),
+                    active: true,
                 }
             }
         }
@@ -226,6 +239,10 @@ impl HabitData {
                         node.skip_node();
                         Ok("".to_string())
                     },
+                    "reset" => {
+                        node.idle_node();
+                        Ok("".to_string())
+                    },
                     _ => {
                         Err("Incorrect input to edit_node()".to_string())
                     }
@@ -252,6 +269,10 @@ impl HabitData {
                             },
                             "skip" => {
                                 node.skip_node();
+                                Ok("".to_string())
+                            },
+                            "reset" => {
+                                node.idle_node();
                                 Ok("".to_string())
                             },
                             _ => {
@@ -284,8 +305,72 @@ impl UserData {
         self.data = HashMap::new();
     }
 
-    fn add_habit(&mut self, name: String, data: HabitData) {
-        self.data.insert(name, data);
+    fn add_habit(&mut self, name: String, data: HabitData) -> Result<String, String> {
+        match self.data.get(&name) {
+            Some(_) => {
+                Err("Habit already exists with that name!".to_string())
+            },
+            None => {
+                self.data.insert(name, data);
+                Ok("".to_string())
+            },
+        }
+    }
+
+    fn remove_habit(&mut self, name: String) -> Result<String, String> {
+        match self.data.remove(&name) {
+            Some(_) => {
+                Ok("".to_string())
+            },
+            None => {
+                Err("No habit exists with that name!".to_string())
+            },
+        }
+    }
+
+    fn hide_habit(&mut self, name: String) -> Result<String, String> {
+        match self.data.get_mut(&name) {
+            Some(habit) => {
+                habit.active = !habit.active;
+                Ok("".to_string())
+            },
+            None => {
+                Err("No habit with that name exists!".to_string())
+            },
+        }
+    }
+
+    fn edit_habit_node(&mut self, args: Vec<String>, date: String, value: i32) -> Result<String, String> {
+        if let Some(habit) = args.get(2).map(|s| s.to_string()) {
+            match self.data.get_mut(&habit) {
+                Some(data) => {
+                    data.edit_node(date, &args[1], value)
+                },
+                None => {
+                    Err("Error: Cannot find data for the specified habit.".to_string())
+                },
+            }
+        } else {
+            Err("Error: Invalid habit input.".to_string())
+        }
+    }
+
+    fn habit_list_day(&mut self, date: String) -> Result<String, String> {
+        let mut output = "".to_string();
+        let mut day = "".to_string();
+        if date == "".to_string() {
+            day = HabitData::get_current_date_id();
+        } else {
+            day = date;
+        }
+
+        for (key, value) in self.data.iter() {
+            match value.nodes.get(&day) {
+                Some(node) => {},
+                None => {}
+            }
+        }
+        Ok("".to_string())
     }
 }
 
@@ -340,6 +425,7 @@ fn main() {
             println!("Habit Tracker Commands: ");
             println!("skip <habit> <opt date> (mark a habit as skipped, defaults to today");
             println!("complete <habit> <opt date> (mark a habit as complete, defaults to today");
+            println!("fail <habit> <opt date> (mark a habit as failed, defaults to today");
             println!("increment <habit> <value> <opt date> (add value to a habit with a numerical goal, defaults to today)");
             println!("reset <habit> <opt date> (reset a habit node, defaults to today)");
             println!("add_habit <habit name> <desc> <goal> <opt enabled days as 1-3-5-7 etc> (adds a new habit to track)");
@@ -350,15 +436,17 @@ fn main() {
             return
         },
         "add_habit" => {
-            if let Some(habit) = arg2 {
+            if let Some(habit_name) = arg2 {
                 match (arg3, arg4, arg5) {
                     (Some(desc), Some(goal), Some(days)) => {
-                        // all args filled, make habit with specific days in mind
                         let new_data = HabitData::new(desc, goal.parse::<i32>().unwrap(), Some(days));
+                        let result = user_data.add_habit(habit_name, new_data);
+                        println!("{:?}", result);
                     },
                     (Some(desc), Some(goal), None) => {
-                        // desc and goal filled, this habit should have all days enabled
                         let new_data = HabitData::new(desc, goal.parse::<i32>().unwrap(), None);
+                        let result = user_data.add_habit(habit_name, new_data);
+                        println!("{:?}", result);
                     }
                     _ => {
                         println!("Error: called add_habit without all arguments accounted for");
@@ -366,67 +454,62 @@ fn main() {
                 }
             }
         },
-        "complete" => {
-            if let Some(habit) = arg2 {
-                match arg3 {
-                    Some(date) => {
-                        let maybe_habit = user_data.data.get_mut(&habit);
-                        match maybe_habit {
-                            Some(data) => {
-                                let result = data.edit_node(date, "complete", 0);
-                                println!("{:?}", result);
-                            },
-                            None => {
-                                println!("Error: Habit does not exist, cannot mark specified date as complete!");
-                            }
-                        }
-                    },
-                    None => {
-                        let today = HabitData::get_current_date_id();
-                        let maybe_habit = user_data.data.get_mut(&habit);
-                        match maybe_habit {
-                            Some(data) => {
-                                let result = data.edit_node(today, "complete", 0);
-                                println!("{:?}", result);
-                            },
-                            None => {
-                                println!("Error: Habit does not exist, cannot mark specified date as complete!");
-                            }
-                        }
-                    }
-                }
+        "remove_habit" => {
+            if let Some(habit_name) = arg2 {
+                let result = user_data.remove_habit(habit_name);
+                println!("{:?}", result);
             }
         },
-        "fail" => {
-            if let Some(habit) = arg2 {
-                match arg3 {
+        "hide_habit" => {
+            if let Some(habit_name) = arg2 {
+                let result = user_data.hide_habit(habit_name);
+                println!("{:?}", result);
+            }
+        },
+        "complete" | "fail" | "skip" | "reset" => {
+            match arg3 {
+                Some(date) => {
+                    let result = user_data.edit_habit_node(args.clone(), date, 0);
+                    println!("{:?}", result);
+                },
+                None => {
+                    let today = HabitData::get_current_date_id();
+                    let result = user_data.edit_habit_node(args.clone(), today, 0);
+                    println!("{:?}", result);
+                },
+            }
+        },
+        "increment" => {
+            let mut value = 0;
+            match arg3 {
+                Some(v) => {
+                    match v.parse::<i32>() {
+                        Ok(val) => {
+                            value = val;
+                        },
+                        Err(e) => {
+                            println!("{:?}", e.to_string());
+                        },
+                    }
+                },
+                None => {
+                    println!("Error: No value given for the increment command.");
+                },
+            }
+            if value != 0 {
+                match arg4 {
                     Some(date) => {
-                        let maybe_habit = user_data.data.get_mut(&habit);
-                        match maybe_habit {
-                            Some(data) => {
-                                let result = data.edit_node(date, "fail", 0);
-                                println!("{:?}", result);
-                            },
-                            None => {
-                                println!("Error: Habit does not exist, cannot mark specified date as failed!");
-                            }
-                        }
+                        let result = user_data.edit_habit_node(args.clone(), date, value);
+                        println!("{:?}", result);
                     },
                     None => {
                         let today = HabitData::get_current_date_id();
-                        let maybe_habit = user_data.data.get_mut(&habit);
-                        match maybe_habit {
-                            Some(data) => {
-                                let result = data.edit_node(today, "fail", 0);
-                                println!("{:?}", result);
-                            },
-                            None => {
-                                println!("Error: Habit does not exist, cannot mark specified date as failed!");
-                            }
-                        }
-                    }
+                        let result = user_data.edit_habit_node(args.clone(), today, 0);
+                        println!("{:?}", result);
+                    },
                 }
             }
+            
         },
         "habit_test" => {
             let test_habit = HabitData::new("test habit!".to_string(), 1000, None);
@@ -434,9 +517,6 @@ fn main() {
 
             println!("Attempting to add a test habit!");
         },
-        "node_test" => {
-
-        }
         _ => {
             println!("testing hehe");
             return
@@ -453,22 +533,20 @@ fn main() {
 
     return
     
-    // TODO
-    // Serialize then save the current userdata as userdata.bin
-    
     // example fn call?
     // cargo run -- <action> <habit> <opt value>
     // cargo run -- complete workout
 
     // actions i want to make
-    // skip <habit> <opt date> (mark a habit as skipped, defaults to today)
-    // complete <habit> <opt date> (mark a habit as complete, defaults to today)
-    // increment <habit> <value> <opt date> (add value to a habit with a numerical goal, defaults to today)
-    // reset <habit> <opt date> (reset a habit node, defaults to today)
+    // x skip <habit> <opt date> (mark a habit as skipped, defaults to today)
+    // x complete <habit> <opt date> (mark a habit as complete, defaults to today)
+    // x fail <habit> <opt date> (mark a habit as failed, defaults to today)
+    // x increment <habit> <value> <opt date> (add value to a habit with a numerical goal, defaults to today)
+    // x reset <habit> <opt date> (reset a habit node, defaults to today)
 
-    // add_habit <habit name> <desc> <goal> <opt enabled days as 1-3-5-7 etc> (adds a new habit to track)
-    // remove_habit <habit name> (deletes a habit and all of that habit's history)
-    // hide_habit <habit name> (stops showing a habit, but keeps the history saved and will not mark days as skipped)
+    // x add_habit <habit name> <desc> <goal> <opt enabled days as 1-3-5-7 etc> (adds a new habit to track)
+    // x remove_habit <habit name> (deletes a habit and all of that habit's history)
+    // x hide_habit <habit name> (stops showing a habit, but keeps the history saved and will not mark days as skipped)
 
     // list <opt date> (shows a colored status list of all active habits at the specified date, defaults to today)
     // history <habit> <opt month/year> (shows a colored calendar history of the habit, defaults to current month)
@@ -502,7 +580,8 @@ mod tests {
             enabled_days: Some(vec![0, 1, 5, 6]),
             description: "this is a test habit".to_string(),
             goal: 100,
-            nodes: HashMap::new()
+            nodes: HashMap::new(),
+            active: true,
         };
         test_user.data.insert("test_habit".to_string(), test_data.clone());
         let data_check = test_user.data.get(&"test_habit".to_string()).unwrap();
@@ -522,7 +601,8 @@ mod tests {
             enabled_days: Some(vec![0, 1, 5, 6]),
             description: "this is a test habit".to_string(),
             goal: 100,
-            nodes: HashMap::new()
+            nodes: HashMap::new(),
+            active: true,
         };
         let test_node = HabitNode {
             value: 10,
