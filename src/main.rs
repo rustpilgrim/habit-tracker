@@ -19,7 +19,6 @@ use ansi_term::{
 // 3) clean up habit data to keep it granular and malleable
 // 4) create a way to edit daily habit data (complete, incomplete, partial complete)
 // 5) simple daily status print to console
-// 6) cannibalize rusti-cal for their calendar print methods?
 
 // DEFAULT HABIT STATUS: IDLE (no color)
 // COMPLETE HABIT STATUS: COMPLETE (green)
@@ -27,7 +26,7 @@ use ansi_term::{
 // SKIPPED HABIT STATUS: SKIPPED (blue)
 // FAILED HABIT STATUS: FAIL (red)
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Eq, Hash)]
 pub enum NodeStatus {
     IDLE,
     SKIPPED,
@@ -98,10 +97,6 @@ impl HabitNode {
         self.status = NodeStatus::COMPLETE;
     }
 
-    fn set_node_value(&mut self, value: i32) {
-        self.value = value;
-    }
-
     fn calculate_status(&mut self) -> NodeStatus {
         if self.value < self.goal {
             self.status = NodeStatus::PARTIAL;
@@ -122,12 +117,17 @@ pub struct HabitData {
     description: String,
     goal: i32, // ex: habit is walk 5000 steps per day, size would be 5000
     nodes: HashMap<String, HabitNode>, // key is month-day-year -> oct 4 2023 = 10-4-2023
+    metrics: HashMap<NodeStatus, i32>, // number of nodes in the habit with each status
     active: bool,
 }
 
 impl HabitData {
     fn new(desc: String, goal: i32, days: Option<String>) -> Self {
         let today = chrono::Local::now();
+        let mut fresh_metrics: HashMap<NodeStatus, i32> = HashMap::new();
+        let keys = vec![NodeStatus::IDLE, NodeStatus::FAILED, NodeStatus::PARTIAL, NodeStatus::SKIPPED, NodeStatus::COMPLETE];
+        
+        let _ = keys.into_iter().map(|k| fresh_metrics.insert(k.clone(), 0));
         match days {
             Some(d) => {
                 match HabitData::validate_allowed_days(d) {
@@ -140,6 +140,7 @@ impl HabitData {
                             description: desc,
                             goal: goal,
                             nodes: HashMap::new(),
+                            metrics: fresh_metrics,
                             active: true,
                         }
                     },
@@ -154,6 +155,7 @@ impl HabitData {
                             description: desc,
                             goal: goal,
                             nodes: HashMap::new(),
+                            metrics: fresh_metrics,
                             active: true,
                         }
                     },
@@ -168,6 +170,7 @@ impl HabitData {
                     description: desc,
                     goal: goal,
                     nodes: HashMap::new(),
+                    metrics: fresh_metrics,
                     active: true,
                 }
             }
@@ -176,7 +179,7 @@ impl HabitData {
 
     fn get_current_date_id() -> String {
         let current_date = chrono::Local::now();
-        let mut date_id = format!("{}-{}-{}",
+        let date_id = format!("{}-{}-{}",
             current_date.month().to_string(),
             current_date.day().to_string(),
             current_date.year().to_string());
@@ -186,8 +189,8 @@ impl HabitData {
     fn validate_allowed_days(s: String) -> Result<Vec<u32>, String> {
         for x in s.split("-").map(|s| s.parse::<u32>()).collect::<Vec<Result<u32, ParseIntError>>>().iter() {
             match x {
-                Ok(u) => {},
-                Err(e) => {
+                Ok(_) => {},
+                Err(_) => {
                     return Err("Error: allowed_days argument was an invalid string.".to_string())
                 },
             }
@@ -205,6 +208,7 @@ impl HabitData {
             },
             None => {
                 self.nodes.insert(date.clone(), self.create_node_from_habit());
+                let _= self.shift_metric(None, Some(NodeStatus::IDLE));
                 Ok(date)
             }
         }
@@ -221,26 +225,34 @@ impl HabitData {
     fn edit_node(&mut self, day: String, command: &str, value: i32) -> Result<String, String> {
         match self.nodes.get_mut(&day) {
             Some(node) => {
+                let current_status = node.status.clone();
                 match command {
                     "complete" => {
                         node.complete_node();
+                        let _ = self.shift_metric(Some(current_status), Some(NodeStatus::COMPLETE));
                         Ok("".to_string())
                     },
                     "fail" => {
                         node.fail_node();
+                        let _ = self.shift_metric(Some(current_status), Some(NodeStatus::FAILED));
                         Ok("".to_string())
                     },
                     "set" => {
                         node.value = value;
-                        node.calculate_status();
+                        let new_status = node.calculate_status();
+                        if new_status != current_status {
+                            let _ = self.shift_metric(Some(current_status), Some(new_status));
+                        }
                         Ok("".to_string())
                     },
                     "skip" => {
                         node.skip_node();
+                        let _ = self.shift_metric(Some(current_status), Some(NodeStatus::SKIPPED));
                         Ok("".to_string())
                     },
                     "reset" => {
                         node.idle_node();
+                        let _ = self.shift_metric(Some(current_status), Some(NodeStatus::IDLE));
                         Ok("".to_string())
                     },
                     _ => {
@@ -256,19 +268,25 @@ impl HabitData {
                         match command {
                             "complete" => {
                                 node.complete_node();
+                                let _ = self.shift_metric(Some(NodeStatus::IDLE), Some(NodeStatus::COMPLETE));
                                 Ok("".to_string())
                             },
                             "fail" => {
                                 node.fail_node();
+                                let _ = self.shift_metric(Some(NodeStatus::IDLE), Some(NodeStatus::FAILED));
                                 Ok("".to_string())
                             },
                             "set" => {
                                 node.value = value;
-                                node.calculate_status();
+                                let new_status = node.calculate_status();
+                                if new_status != NodeStatus::IDLE {
+                                    let _ = self.shift_metric(Some(NodeStatus::IDLE), Some(new_status));
+                                }
                                 Ok("".to_string())
                             },
                             "skip" => {
                                 node.skip_node();
+                                let _ = self.shift_metric(Some(NodeStatus::IDLE), Some(NodeStatus::SKIPPED));
                                 Ok("".to_string())
                             },
                             "reset" => {
@@ -288,7 +306,36 @@ impl HabitData {
             },
         }
     }
+
+    fn shift_metric(&mut self, decrement: Option<NodeStatus>, increment: Option<NodeStatus>) -> Result<String, String> {
+        match increment {
+            Some(inc_status) => {
+                if let Some(dec_status) = decrement {
+                    *self.metrics.get_mut(&dec_status).unwrap() -= 1;
+                    *self.metrics.get_mut(&inc_status).unwrap() += 1;
+                    Ok("".to_string())
+                } else {
+                    *self.metrics.get_mut(&inc_status).unwrap() += 1;
+                    Ok("".to_string())
+                }
+            },
+            None => {
+                Err("Invalid metric increment argument.".to_string())
+            },
+        }
+    }
+
+    fn print_metrics(&self) {
+        let overall = (self.metrics.get(&NodeStatus::COMPLETE).unwrap()/self.nodes.len() as i32)/100;
+        println!("Overall habit score: {:?} ({:?}/{:?})", overall, self.metrics.get(&NodeStatus::COMPLETE).unwrap(), self.nodes.len() as i32);
+        println!("Number of completed days: {:?}", self.metrics.get(&NodeStatus::COMPLETE).unwrap());
+        println!("Number of partially completed days: {:?}", self.metrics.get(&NodeStatus::PARTIAL).unwrap());
+        println!("Number of skipped days: {:?}", self.metrics.get(&NodeStatus::SKIPPED).unwrap());
+        println!("Number of idle days: {:?}", self.metrics.get(&NodeStatus::IDLE).unwrap());
+        println!("Number of failed days: {:?}", self.metrics.get(&NodeStatus::FAILED).unwrap());
+    }
 }
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserData {
@@ -301,8 +348,21 @@ impl UserData {
     fn new() -> Self {
         UserData { id: 0, name: "".to_string(), data: HashMap::new() }
     }
+
     fn clear_data(&mut self) {
         self.data = HashMap::new();
+    }
+
+    fn show_history(&self, habit: String) -> Result<String, String> {
+        match self.data.get(&habit) {
+            Some(data) => {
+                data.print_metrics();
+                Ok("".to_string())
+            },
+            None => {
+                Err("Couldn't find specified habit!".to_string())
+            },
+        }
     }
 
     fn add_habit(&mut self, name: String, data: HabitData) -> Result<String, String> {
@@ -432,8 +492,12 @@ fn main() {
             println!("remove_habit <habit name> (deletes a habit and all of that habit's history)");
             println!("hide_habit <habit name> (stops showing a habit, but keeps the history saved and will not mark days as skipped)");
             println!("list <opt date> (shows a colored status list of all active habits at the specified date, defaults to today)");
-            println!("history <habit> <opt month/year> (shows a colored calendar history of the habit, defaults to current month)");
+            println!("history <habit> (shows to-date data of the specified habit, tracking % of completed days)");
             return
+        },
+        "reset_all" => {
+            // TODO: Expand this with an extra step to prevent accidental deletion
+            user_data.clear_data();
         },
         "add_habit" => {
             if let Some(habit_name) = arg2 {
@@ -511,9 +575,14 @@ fn main() {
             }
             
         },
+        "history" => {
+            if let Some(habit) = arg2 {
+                let _ = user_data.show_history(habit);
+            }
+        },
         "habit_test" => {
             let test_habit = HabitData::new("test habit!".to_string(), 1000, None);
-            user_data.add_habit("test_habit".to_string(), test_habit);
+            let _ = user_data.add_habit("test_habit".to_string(), test_habit);
 
             println!("Attempting to add a test habit!");
         },
@@ -581,6 +650,7 @@ mod tests {
             description: "this is a test habit".to_string(),
             goal: 100,
             nodes: HashMap::new(),
+            metrics: HashMap::new(),
             active: true,
         };
         test_user.data.insert("test_habit".to_string(), test_data.clone());
@@ -602,6 +672,7 @@ mod tests {
             description: "this is a test habit".to_string(),
             goal: 100,
             nodes: HashMap::new(),
+            metrics: HashMap::new(),
             active: true,
         };
         let test_node = HabitNode {
