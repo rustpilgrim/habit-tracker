@@ -5,11 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 
-use ansi_term::{
-    Color::{Black, Cyan, Purple, Red, Yellow, RGB},
-    Style,
-};
-
 // TODO
 // I want a habit tracker that works entirely inside of the terminal, with simple data storage/retrieval via MongoDB
 
@@ -73,14 +68,6 @@ pub struct HabitNode {
 }
 
 impl HabitNode {
-    fn get_status(&self) -> NodeStatus {
-        self.status.clone()
-    }
-
-    fn set_status(&mut self, status: NodeStatus) {
-        self.status = status;
-    }
-
     fn idle_node(&mut self) {
         self.status = NodeStatus::IDLE;
     }
@@ -95,6 +82,7 @@ impl HabitNode {
 
     fn complete_node(&mut self) {
         self.status = NodeStatus::COMPLETE;
+        self.value = self.goal;
     }
 
     fn calculate_status(&mut self) -> NodeStatus {
@@ -126,8 +114,11 @@ impl HabitData {
         let today = chrono::Local::now();
         let mut fresh_metrics: HashMap<NodeStatus, i32> = HashMap::new();
         let keys = vec![NodeStatus::IDLE, NodeStatus::FAILED, NodeStatus::PARTIAL, NodeStatus::SKIPPED, NodeStatus::COMPLETE];
+
+        for key in keys {
+            fresh_metrics.insert(key, 0);
+        }
         
-        let _ = keys.into_iter().map(|k| fresh_metrics.insert(k.clone(), 0));
         match days {
             Some(d) => {
                 match HabitData::validate_allowed_days(d) {
@@ -255,16 +246,23 @@ impl HabitData {
                         let _ = self.shift_metric(Some(current_status), Some(NodeStatus::IDLE));
                         Ok("".to_string())
                     },
+                    "increment" => {
+                        node.value += value;
+                        let new_status = node.calculate_status();
+                        if new_status != current_status {
+                            let _ = self.shift_metric(Some(current_status), Some(new_status));
+                        }
+                        Ok("".to_string())
+                    },
                     _ => {
                         Err("Incorrect input to edit_node()".to_string())
                     }
                 }
             },
             None => {
-                let today = HabitData::get_current_date_id();
-                match self.insert_fresh_node(today.clone()) {
+                match self.insert_fresh_node(day.clone()) {
                     Ok(_) => {
-                        let node = self.nodes.get_mut(&today).unwrap();
+                        let node = self.nodes.get_mut(&day).unwrap();
                         match command {
                             "complete" => {
                                 node.complete_node();
@@ -291,6 +289,14 @@ impl HabitData {
                             },
                             "reset" => {
                                 node.idle_node();
+                                Ok("".to_string())
+                            },
+                            "increment" => {
+                                node.value += value;
+                                let new_status = node.calculate_status();
+                                if new_status != NodeStatus::IDLE {
+                                    let _ = self.shift_metric(Some(NodeStatus::IDLE), Some(new_status));
+                                }
                                 Ok("".to_string())
                             },
                             _ => {
@@ -326,8 +332,11 @@ impl HabitData {
     }
 
     fn print_metrics(&self) {
-        let overall = (self.metrics.get(&NodeStatus::COMPLETE).unwrap()/self.nodes.len() as i32)/100;
-        println!("Overall habit score: {:?} ({:?}/{:?})", overall, self.metrics.get(&NodeStatus::COMPLETE).unwrap(), self.nodes.len() as i32);
+        let partial = *self.metrics.get(&NodeStatus::PARTIAL).unwrap() as f64 / (2*self.nodes.len()) as f64;
+        let complete = *self.metrics.get(&NodeStatus::COMPLETE).unwrap() as f64 / self.nodes.len() as f64;
+        let overall = (complete + partial) * 100 as f64;
+        let overall_count = *self.metrics.get(&NodeStatus::COMPLETE).unwrap() as f64 + (*self.metrics.get(&NodeStatus::PARTIAL).unwrap() as f64/2 as f64);
+        println!("Overall habit score: {:.1}% ({:.1}/{:?})", overall, overall_count, self.nodes.len() as i32);
         println!("Number of completed days: {:?}", self.metrics.get(&NodeStatus::COMPLETE).unwrap());
         println!("Number of partially completed days: {:?}", self.metrics.get(&NodeStatus::PARTIAL).unwrap());
         println!("Number of skipped days: {:?}", self.metrics.get(&NodeStatus::SKIPPED).unwrap());
@@ -415,19 +424,29 @@ impl UserData {
         }
     }
 
-    fn habit_list_day(&mut self, date: String) -> Result<String, String> {
-        let mut output = "".to_string();
-        let mut day = "".to_string();
+    fn habit_list_for_day(&mut self, date: String) -> Result<String, String> {
+        if self.data.len() == 0 {
+            return Err("No habits to list!".to_string())
+        }
+
+        let day;
         if date == "".to_string() {
             day = HabitData::get_current_date_id();
         } else {
             day = date;
         }
 
+        println!("Habit list for {}", day);
         for (key, value) in self.data.iter() {
-            match value.nodes.get(&day) {
-                Some(node) => {},
-                None => {}
+            if value.active == true {
+                match value.nodes.get(&day) {
+                    Some(node) => {
+                        println!("{}: {:?} ({}/{})", key, node.status, node.value, node.goal);
+                    },
+                    None => {
+                        // Do nothing?
+                    }
+                }
             }
         }
         Ok("".to_string())
@@ -444,7 +463,6 @@ fn main() {
 
     let user_data_result: Result<UserData, String> = match File::open("userdata.bin") {
         Ok(file) => {
-            // userdata.bin is found, attempt to load the existing data
             let mut data = Vec::new();
             let _ = file.take(u64::MAX).read_to_end(&mut data);
 
@@ -458,7 +476,6 @@ fn main() {
             }
         },
         Err(e) => { 
-            // userdata.bin wasn't found, just return the error 
             Err(e.to_string())
         }
     };
@@ -487,11 +504,12 @@ fn main() {
             println!("complete <habit> <opt date> (mark a habit as complete, defaults to today");
             println!("fail <habit> <opt date> (mark a habit as failed, defaults to today");
             println!("increment <habit> <value> <opt date> (add value to a habit with a numerical goal, defaults to today)");
+            println!("set <habit> <value> <opt date> (overwrites existing value for a habit, defaults to today)");
             println!("reset <habit> <opt date> (reset a habit node, defaults to today)");
             println!("add_habit <habit name> <desc> <goal> <opt enabled days as 1-3-5-7 etc> (adds a new habit to track)");
             println!("remove_habit <habit name> (deletes a habit and all of that habit's history)");
             println!("hide_habit <habit name> (stops showing a habit, but keeps the history saved and will not mark days as skipped)");
-            println!("list <opt date> (shows a colored status list of all active habits at the specified date, defaults to today)");
+            println!("list <opt date> (shows a status list of all active habits at the specified date, defaults to today)");
             println!("history <habit> (shows to-date data of the specified habit, tracking % of completed days)");
             return
         },
@@ -543,7 +561,7 @@ fn main() {
                 },
             }
         },
-        "increment" => {
+        "increment" | "set" => {
             let mut value = 0;
             match arg3 {
                 Some(v) => {
@@ -568,7 +586,7 @@ fn main() {
                     },
                     None => {
                         let today = HabitData::get_current_date_id();
-                        let result = user_data.edit_habit_node(args.clone(), today, 0);
+                        let result = user_data.edit_habit_node(args.clone(), today, value);
                         println!("{:?}", result);
                     },
                 }
@@ -586,6 +604,19 @@ fn main() {
 
             println!("Attempting to add a test habit!");
         },
+        "list" => {
+            match arg2 {
+                Some(date) => {
+                    let result = user_data.habit_list_for_day(date);
+                    println!("{:?}", result);
+                },
+                None => {
+                    let today = HabitData::get_current_date_id();
+                    let result = user_data.habit_list_for_day(today);
+                    println!("{:?}", result);
+                },
+            }
+        }
         _ => {
             println!("testing hehe");
             return
