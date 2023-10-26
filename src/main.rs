@@ -5,22 +5,6 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs::File;
 
-// TODO
-// I want a habit tracker that works entirely inside of the terminal, with simple data storage/retrieval via MongoDB
-
-// First steps:
-// 1) create a data structure that looks like HashMap<userid, HashMap<habitid, habitdata>>
-// 2) create a way to insert habits for a userid
-// 3) clean up habit data to keep it granular and malleable
-// 4) create a way to edit daily habit data (complete, incomplete, partial complete)
-// 5) simple daily status print to console
-
-// DEFAULT HABIT STATUS: IDLE (no color)
-// COMPLETE HABIT STATUS: COMPLETE (green)
-// PENDING HABIT STATUS: PENDING (yellow)
-// SKIPPED HABIT STATUS: SKIPPED (blue)
-// FAILED HABIT STATUS: FAIL (red)
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Eq, Hash)]
 pub enum NodeStatus {
     IDLE,
@@ -630,26 +614,6 @@ fn main() {
 
     let mut file = File::create("userdata.bin").unwrap();
     file.write_all(&serialized).unwrap();
-
-    return
-    
-    // example fn call?
-    // cargo run -- <action> <habit> <opt value>
-    // cargo run -- complete workout
-
-    // actions i want to make
-    // x skip <habit> <opt date> (mark a habit as skipped, defaults to today)
-    // x complete <habit> <opt date> (mark a habit as complete, defaults to today)
-    // x fail <habit> <opt date> (mark a habit as failed, defaults to today)
-    // x increment <habit> <value> <opt date> (add value to a habit with a numerical goal, defaults to today)
-    // x reset <habit> <opt date> (reset a habit node, defaults to today)
-
-    // x add_habit <habit name> <desc> <goal> <opt enabled days as 1-3-5-7 etc> (adds a new habit to track)
-    // x remove_habit <habit name> (deletes a habit and all of that habit's history)
-    // x hide_habit <habit name> (stops showing a habit, but keeps the history saved and will not mark days as skipped)
-
-    // list <opt date> (shows a colored status list of all active habits at the specified date, defaults to today)
-    // history <habit> <opt month/year> (shows a colored calendar history of the habit, defaults to current month)
 }
 
 #[cfg(test)]
