@@ -51,6 +51,7 @@ pub struct HabitNode {
 impl HabitNode {
     fn idle_node(&mut self) {
         self.status = NodeStatus::IDLE;
+        self.value = 0;
     }
 
     fn skip_node(&mut self) {
